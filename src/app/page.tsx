@@ -1,103 +1,155 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+type UserRow = { id: string; email: string; plan: string | null };
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+  const [rows, setRows] = useState<UserRow[]>([]);
+  const [email, setEmail] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+
+  // Charger les inscriptions existantes
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from("users")
+        .select("*")
+        .order("id", { ascending: false });
+      setRows((data as UserRow[]) || []);
+      setLoading(false);
+    })();
+  }, []);
+
+  // Gestion formulaire
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setMessage(null);
+    const { error } = await supabase
+      .from("users")
+      .insert({ email, plan: "free" });
+    if (error) {
+      setMessage(`Erreur : ${error.message}`);
+    } else {
+      setMessage("Inscription réussie ✅");
+      setEmail("");
+      const { data } = await supabase
+        .from("users")
+        .select("*")
+        .order("id", { ascending: false });
+      setRows((data as UserRow[]) || []);
+    }
+    setSubmitting(false);
+  };
+
+  return (
+    <main className="min-h-screen bg-white text-neutral-900">
+      {/* Hero */}
+      <section className="mx-auto max-w-3xl px-6 py-16 text-center">
+        <h1 className="text-4xl font-bold tracking-tight">
+          Trendily — Reste en avance sur les tendances IA
+        </h1>
+        <p className="mt-4 text-lg text-neutral-600">
+          Recevez des alertes sur les tendances IA de niche avant qu’elles ne deviennent
+          mainstream. Idéal pour marketeurs, créateurs de contenu et entrepreneurs.
+        </p>
+
+        <a
+          href="/dashboard"
+          className="mt-6 inline-block rounded-xl bg-neutral-200 px-4 py-2 text-sm font-medium hover:bg-neutral-300"
+        >
+          Voir le Dashboard
+        </a>
+
+
+        {/* Formulaire */}
+        <form
+          onSubmit={handleSubmit}
+          className="mt-8 flex flex-col items-center gap-3 sm:flex-row sm:justify-center"
+        >
+          <input
+            type="email"
+            placeholder="Votre email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            className="w-full max-w-xs rounded-xl border border-neutral-300 px-4 py-3 outline-none focus:ring-2 focus:ring-black"
+          />
+          <button
+            type="submit"
+            disabled={submitting}
+            className="w-full max-w-xs rounded-xl bg-black px-5 py-3 font-medium text-white disabled:opacity-50 sm:w-auto"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            {submitting ? "Envoi..." : "Essai gratuit"}
+          </button>
+        </form>
+
+        {message && (
+          <p
+            className={`mt-3 ${
+              message.includes("Erreur") ? "text-red-600" : "text-green-600"
+            }`}
           >
-            Read our docs
-          </a>
+            {message}
+          </p>
+        )}
+      </section>
+
+      {/* Pricing */}
+      <section className="bg-neutral-50 py-16">
+        <div className="mx-auto max-w-5xl px-6">
+          <h2 className="text-center text-3xl font-bold">Plans & Tarifs</h2>
+          <div className="mt-10 grid gap-6 sm:grid-cols-3">
+            {/* Free */}
+            <div className="rounded-2xl border border-neutral-200 bg-white p-6 text-center">
+              <h3 className="text-xl font-semibold">Free</h3>
+              <p className="mt-2 text-neutral-600">1 niche, 5 alertes/mois</p>
+              <p className="mt-4 text-3xl font-bold">0€</p>
+            </div>
+
+            {/* Pro */}
+            <div className="rounded-2xl border border-neutral-200 bg-white p-6 text-center">
+              <h3 className="text-xl font-semibold">Pro</h3>
+              <p className="mt-2 text-neutral-600">
+                3 niches, 20 alertes/mois, insights détaillés
+              </p>
+              <p className="mt-4 text-3xl font-bold">19€/mois</p>
+            </div>
+
+            {/* Premium */}
+            <div className="rounded-2xl border border-neutral-200 bg-white p-6 text-center">
+              <h3 className="text-xl font-semibold">Premium</h3>
+              <p className="mt-2 text-neutral-600">
+                5 niches, 50 alertes/mois, export PDF, support prioritaire
+              </p>
+              <p className="mt-4 text-3xl font-bold">49€/mois</p>
+            </div>
+          </div>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+      </section>
+
+      {/* Debug inscriptions */}
+      <section className="mx-auto max-w-3xl px-6 py-12">
+        <h2 className="mb-3 text-lg font-semibold">Inscriptions (debug)</h2>
+        {loading ? (
+          <p>Chargement...</p>
+        ) : rows.length === 0 ? (
+          <p>Aucune inscription.</p>
+        ) : (
+          <pre className="rounded-xl bg-neutral-100 p-4 text-sm">
+            {JSON.stringify(rows, null, 2)}
+          </pre>
+        )}
+      </section>
+    </main>
   );
 }
