@@ -1,4 +1,3 @@
-// app/api/trends/route.ts  (ou src/app/api/trends/route.ts)
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -8,13 +7,16 @@ type TrendPoint = { title: string; interest: number };
 
 async function fromSerpAPI(q: string, geo?: string) {
   const apiKey = process.env.SERPAPI_KEY;
-  if (!apiKey) return { trends: [] as TrendPoint[], error: "SERPAPI_KEY manquant" };
+  if (!apiKey) {
+    return { trends: [] as TrendPoint[], error: "SERPAPI_KEY manquant", status: 500 };
+  }
 
+  // ⚠️ SerpAPI attend 'date=today 12-m' (pas 'time=now 12-m')
   const params = new URLSearchParams({
     engine: "google_trends",
     q,
     data_type: "TIMESERIES",
-    time: "now 12-m", // 12 derniers mois
+    date: "today 12-m", // 12 derniers mois
     tz: "0",
     api_key: apiKey,
   });
@@ -22,25 +24,32 @@ async function fromSerpAPI(q: string, geo?: string) {
 
   const url = `https://serpapi.com/search.json?${params.toString()}`;
   const res = await fetch(url, { cache: "no-store" });
+
   if (!res.ok) {
     const text = await res.text();
-    return { trends: [] as TrendPoint[], error: `SerpAPI ${res.status}: ${text}` };
+    return { trends: [], error: `SerpAPI ${res.status}: ${text}`, status: res.status };
   }
 
   const data = await res.json();
-  if (data?.error) return { trends: [] as TrendPoint[], error: String(data.error) };
+
+  // SerpAPI peut renvoyer 200 avec un champ 'error' dans le JSON
+  if (data?.error) {
+    return { trends: [], error: `SerpAPI: ${String(data.error)}`, status: 502 };
+  }
 
   const raw: any[] = data?.interest_over_time?.timeline_data ?? [];
   if (!Array.isArray(raw) || raw.length === 0) {
-    return { trends: [] as TrendPoint[], error: "SerpAPI: timeline_data vide" };
+    return { trends: [], error: "SerpAPI: timeline_data vide", status: 502 };
   }
 
-  const points: TrendPoint[] = raw.map((item: any) => ({
-    title: String(item?.date ?? item?.formattedAxisTime ?? item?.time ?? ""),
-    interest: Number(item?.values?.[0]?.extracted_value ?? item?.values?.[0]?.value ?? 0),
-  })).slice(-52);
+  const points: TrendPoint[] = raw
+    .map((item: any) => ({
+      title: String(item?.date ?? item?.formattedAxisTime ?? item?.time ?? ""),
+      interest: Number(item?.values?.[0]?.extracted_value ?? item?.values?.[0]?.value ?? 0),
+    }))
+    .slice(-52); // ~ 1 an
 
-  return { trends: points };
+  return { trends: points, error: null as string | null, status: 200 };
 }
 
 async function fromGoogleTrends(q: string, geo?: string) {
@@ -57,18 +66,21 @@ async function fromGoogleTrends(q: string, geo?: string) {
 
     const parsed = JSON.parse(results);
     const timeline: any[] = parsed?.default?.timelineData ?? [];
+
     if (!Array.isArray(timeline) || timeline.length === 0) {
-      return { trends: [] as TrendPoint[], error: "google-trends-api: timelineData vide" };
+      return { trends: [] as TrendPoint[], error: "google-trends-api: timelineData vide", status: 502 };
     }
 
-    const points: TrendPoint[] = timeline.map((t: any) => {
-      const iso = new Date(Number(t.time) * 1000).toISOString().slice(0, 10);
-      return { title: iso, interest: Number(t.value?.[0] ?? 0) };
-    }).slice(-52);
+    const points: TrendPoint[] = timeline
+      .map((t: any) => {
+        const iso = new Date(Number(t.time) * 1000).toISOString().slice(0, 10);
+        return { title: iso, interest: Number(t.value?.[0] ?? 0) };
+      })
+      .slice(-52);
 
-    return { trends: points };
+    return { trends: points, error: null as string | null, status: 200 };
   } catch (e: any) {
-    return { trends: [] as TrendPoint[], error: e?.message ?? "Erreur google-trends-api" };
+    return { trends: [] as TrendPoint[], error: e?.message ?? "Erreur google-trends-api", status: 500 };
   }
 }
 
@@ -76,20 +88,27 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const q = (searchParams.get("q") || "artificial intelligence").trim();
   const geo = searchParams.get("geo") || undefined;
+  const debug = searchParams.get("debug") === "1";
 
-  // 1) Tente SerpAPI
+  // 1) Tente SerpAPI (avec le bon paramètre 'date')
   const a = await fromSerpAPI(q, geo);
   if (a.trends.length > 0) {
-    return NextResponse.json({ trends: a.trends, source: "serpapi" }, { status: 200 });
+    const body: any = { trends: a.trends, source: "serpapi" };
+    if (debug) body.debug = { serpapi: { count: a.trends.length, error: a.error } };
+    return NextResponse.json(body, { status: 200 });
   }
 
-  // 2) Fallback: google-trends-api (gratuit)
+  // 2) Fallback: google-trends-api
   const b = await fromGoogleTrends(q, geo);
   if (b.trends.length > 0) {
-    return NextResponse.json({ trends: b.trends, source: "google-trends-api" }, { status: 200 });
+    const body: any = { trends: b.trends, source: "google-trends-api" };
+    if (debug) body.debug = { serpapi: { error: a.error }, gtrends: { count: b.trends.length, error: b.error } };
+    return NextResponse.json(body, { status: 200 });
   }
 
-  // 3) Rien → expliquer pourquoi
-  const msg = [a.error, b.error].filter(Boolean).join(" | ");
-  return NextResponse.json({ trends: [], error: msg || "Pas de données" }, { status: 502 });
+  // 3) Rien → on explique
+  const msg = [a.error, b.error].filter(Boolean).join(" | ") || "Pas de données";
+  const body: any = { trends: [], error: msg, source: "none" };
+  if (debug) body.debug = { serpapi: { error: a.error }, gtrends: { error: b.error } };
+  return NextResponse.json(body, { status: 502 });
 }
