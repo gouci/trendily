@@ -25,6 +25,7 @@ export default function Dashboard() {
   const [data, setData] = useState<TrendPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("artificial intelligence");
+  const [geo, setGeo] = useState<string>("FR"); // 👈 NOUVEAU : pays par défaut
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -33,17 +34,22 @@ export default function Dashboard() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`/api/trends?q=${encodeURIComponent(q)}`, { cache: "no-store" });
+        const url = `/api/trends?q=${encodeURIComponent(q)}${geo ? `&geo=${geo}` : ""}`; // 👈 passe le geo
+        const res = await fetch(url, { cache: "no-store" });
         const json = await res.json();
+        if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`); // 👈 gère erreurs HTTP
         if (!abort) setData(json.trends ?? []);
       } catch (e: any) {
-        if (!abort) setError(e?.message ?? "Erreur inconnue");
+        if (!abort) {
+          setError(e?.message ?? "Erreur inconnue");
+          setData([]); // évite affichage ancien
+        }
       } finally {
         if (!abort) setLoading(false);
       }
     })();
     return () => { abort = true; };
-  }, [q]);
+  }, [q, geo]); // 👈 redéclenche si le pays change
 
   const latest: AugPoint[] = useMemo(() => {
     const points = [...data].slice(-12);
@@ -187,8 +193,8 @@ Actions rapides:
       <h1 className="mb-4 text-3xl font-bold">Dashboard — Trends</h1>
 
       <div className="mb-3 text-xs text-neutral-500">
-  Supabase: {process.env.NEXT_PUBLIC_SUPABASE_URL}
-</div>
+        Supabase: {process.env.NEXT_PUBLIC_SUPABASE_URL}
+      </div>
 
       {!loading && !error && (
         <div className={`mb-6 rounded-xl border p-4 ${hasAlert ? "border-green-300 bg-green-50 text-green-800" : "border-neutral-200 bg-neutral-50 text-neutral-700"}`}>
@@ -269,8 +275,26 @@ Actions rapides:
 
       {/* Recherche & liste des semaines */}
       <form onSubmit={handleSearch} className="mb-6 flex gap-3">
-        <input name="q" defaultValue={q} placeholder='Ex: "ai for seo", "ai video editing", "ai agents e-commerce"'
-          className="w-full max-w-xl rounded-xl border border-neutral-300 px-4 py-3 outline-none focus:ring-2 focus:ring-black" />
+        <input
+          name="q"
+          defaultValue={q}
+          placeholder='Ex: "ai for seo", "ai video editing", "ai agents e-commerce"'
+          className="w-full max-w-xl rounded-xl border border-neutral-300 px-4 py-3 outline-none focus:ring-2 focus:ring-black"
+        />
+        {/* 👇 NOUVEAU : sélecteur de pays (optionnel) */}
+        <select
+          value={geo}
+          onChange={(e) => setGeo(e.target.value)}
+          className="rounded-xl border border-neutral-300 px-3 py-3 outline-none focus:ring-2 focus:ring-black"
+          title="Pays"
+        >
+          <option value="">Global</option>
+          <option value="FR">France</option>
+          <option value="US">USA</option>
+          <option value="GB">UK</option>
+          <option value="DE">Allemagne</option>
+        </select>
+
         <button className="rounded-xl bg-black px-5 py-3 font-medium text-white">Rechercher</button>
       </form>
 
