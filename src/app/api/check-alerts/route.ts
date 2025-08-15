@@ -12,6 +12,20 @@ function pctWoW(points: TrendPoint[]): number | null {
   return Math.round(((last - prev) / prev) * 100);
 }
 
+function avgInterest(points: TrendPoint[]): number {
+  if (!points || points.length === 0) return 0;
+  return Math.round(points.reduce((sum, p) => sum + p.interest, 0) / points.length);
+}
+
+function stability(points: TrendPoint[]): number {
+  if (!points || points.length < 3) return 0;
+  let upWeeks = 0;
+  for (let i = 1; i < points.length; i++) {
+    if (points[i].interest >= points[i - 1].interest) upWeeks++;
+  }
+  return Math.round((upWeeks / (points.length - 1)) * 100);
+}
+
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -65,14 +79,21 @@ export async function GET(req: Request) {
     const res = await fetch(`${url.origin}/api/trends?q=${encodeURIComponent(query)}`, { cache: "no-store" });
     const json = await res.json();
     const points: TrendPoint[] = json?.trends ?? [];
-    const pct = pctWoW(points);
-    const lastInterest = points.at(-1)?.interest ?? null;
 
-    if (pct == null && !force) {
+    const pct = pctWoW(points);
+    const avg = avgInterest(points);
+    const stab = stability(points);
+
+    // Score : croissance * pondération volume * stabilité
+    const score = (pct ?? 0) * (avg / 100) * (stab / 100);
+
+    // Filtrage : ignorer si volume trop faible
+    if (avg < 40 && !force) {
       for (const sub of subs) details.push({ id: sub.id, email: sub.email, query, pct, status: "skipped" });
       continue;
     }
 
+    // On garde cette logique simple car ici on traite par query
     for (const sub of subs) {
       const threshold = Number(sub.threshold ?? 10);
       const lastNotifiedAt = sub.last_notified_at ? new Date(sub.last_notified_at).getTime() : 0;
@@ -87,12 +108,14 @@ export async function GET(req: Request) {
       attempts++;
 
       const to = sub.email;
-
-      const subject = `ALERTE Trendily — “${query}” +${pct ?? 0}% cette semaine`;
+      const subject = `ALERTE Trendily — “${query}” (+${pct ?? 0}%, score ${Math.round(score)})`;
       const html = `
         <div style="font-family:system-ui; line-height:1.55">
           <h2>🚀 Tendance en hausse : ${query}</h2>
-          <p><strong>+${pct ?? 0}%</strong> vs semaine précédente. Indice d’intérêt actuel : <strong>${lastInterest ?? "?"}</strong>.</p>
+          <p><strong>+${pct ?? 0}%</strong> vs semaine précédente.</p>
+          <p>Indice d’intérêt actuel : <strong>${points.at(-1)?.interest ?? "?"}</strong> (moyenne ${avg}/100).</p>
+          <p>Stabilité : ${stab}% d’heures en hausse.</p>
+          <p>Score global : ${Math.round(score)}</p>
           <p>Idées d’actions rapides :</p>
           <ul>
             <li>Vidéo/short “pourquoi maintenant”.</li>
@@ -112,8 +135,7 @@ export async function GET(req: Request) {
         details.push({ id: sub.id, email: to, query, pct: pct ?? null, status: "sent" });
 
         await supabase.from("alerts").update({ last_notified_at: new Date().toISOString() }).eq("id", sub.id);
-
-        await delay(300); // éviter la limite Resend
+        await delay(300);
       } catch (e: any) {
         details.push({ id: sub.id, email: to, query, pct: pct ?? null, status: "error", error: e?.message ?? String(e) });
       }
