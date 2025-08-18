@@ -3,6 +3,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
+/* --- AJOUT pour le graphe --- */
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
+/* --- FIN AJOUT --- */
+
 type TrendPoint = { title: string; interest: number };
 type AugPoint = TrendPoint & { delta: number | null; pct: number | null };
 type AlertRow = { id: string; email: string; query: string; threshold: number; created_at: string };
@@ -25,7 +37,7 @@ export default function Dashboard() {
   const [data, setData] = useState<TrendPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("artificial intelligence");
-  const [geo, setGeo] = useState<string>("FR"); // 👈 NOUVEAU : pays par défaut
+  const [geo, setGeo] = useState<string>("FR"); // AJOUT: pays pour requêtes
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -34,22 +46,20 @@ export default function Dashboard() {
       setLoading(true);
       setError(null);
       try {
-        const url = `/api/trends?q=${encodeURIComponent(q)}${geo ? `&geo=${geo}` : ""}`; // 👈 passe le geo
+        const url = `/api/trends?q=${encodeURIComponent(q)}${geo ? `&geo=${geo}` : ""}`;
         const res = await fetch(url, { cache: "no-store" });
         const json = await res.json();
-        if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`); // 👈 gère erreurs HTTP
+        if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
         if (!abort) setData(json.trends ?? []);
       } catch (e: any) {
-        if (!abort) {
-          setError(e?.message ?? "Erreur inconnue");
-          setData([]); // évite affichage ancien
-        }
+        if (!abort) setError(e?.message ?? "Erreur inconnue");
+        if (!abort) setData([]);
       } finally {
         if (!abort) setLoading(false);
       }
     })();
     return () => { abort = true; };
-  }, [q, geo]); // 👈 redéclenche si le pays change
+  }, [q, geo]); // AJOUT: relance quand le pays change
 
   const latest: AugPoint[] = useMemo(() => {
     const points = [...data].slice(-12);
@@ -184,7 +194,8 @@ Actions rapides:
   // --------- UI ----------
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    const input = (e.target as HTMLFormElement).elements.namedItem("q") as HTMLInputElement;
+    const form = e.target as HTMLFormElement;
+    const input = form.elements.namedItem("q") as HTMLInputElement;
     setQ(input.value.trim() || "artificial intelligence");
   };
 
@@ -281,7 +292,7 @@ Actions rapides:
           placeholder='Ex: "ai for seo", "ai video editing", "ai agents e-commerce"'
           className="w-full max-w-xl rounded-xl border border-neutral-300 px-4 py-3 outline-none focus:ring-2 focus:ring-black"
         />
-        {/* 👇 NOUVEAU : sélecteur de pays (optionnel) */}
+        {/* Select pays (optionnel) */}
         <select
           value={geo}
           onChange={(e) => setGeo(e.target.value)}
@@ -297,6 +308,32 @@ Actions rapides:
 
         <button className="rounded-xl bg-black px-5 py-3 font-medium text-white">Rechercher</button>
       </form>
+
+      {/* --- AJOUT : Graphique sur les 12 dernières semaines --- */}
+      {!loading && !error && latest.length > 0 && (
+        <section className="mb-8 rounded-2xl border border-neutral-200 bg-white p-5">
+          <h2 className="mb-3 text-lg font-semibold">Évolution — {q} ({geo || "Global"})</h2>
+          <div className="w-full" style={{ height: 320 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={latest}>
+                <CartesianGrid strokeDasharray="4 4" />
+                <XAxis dataKey="title" tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 12 }} />
+                <Tooltip
+                  formatter={(value: any, name: any) => {
+                    if (name === "interest") return [value, "Intérêt"];
+                    if (name === "pct") return [`${value}%`, "Évolution vs-1"];
+                    return [value, name];
+                  }}
+                  labelFormatter={(label) => `Semaine: ${label}`}
+                />
+                <Line type="monotone" dataKey="interest" stroke="#2563eb" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </section>
+      )}
+      {/* --- FIN AJOUT --- */}
 
       {loading && <p>Chargement des tendances…</p>}
       {error && <p className="text-red-600">Erreur : {error}</p>}
