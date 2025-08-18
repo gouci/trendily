@@ -22,10 +22,7 @@ export async function GET(req: Request) {
   // --- sécurité ---
   const key = url.searchParams.get("key");
   if (key !== process.env.ALERT_SECRET) {
-    return NextResponse.json(
-      { ok: false, error: "unauthorized" },
-      { status: 401 }
-    );
+    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
   const force = url.searchParams.get("force") === "true";
@@ -38,11 +35,7 @@ export async function GET(req: Request) {
   );
 
   const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey)
-    return NextResponse.json(
-      { ok: false, error: "Missing RESEND_API_KEY" },
-      { status: 500 }
-    );
+  if (!apiKey) return NextResponse.json({ ok: false, error: "Missing RESEND_API_KEY" }, { status: 500 });
   const resend = new Resend(apiKey);
   const from = process.env.EMAIL_FROM || "Trendily <onboarding@resend.dev>";
 
@@ -53,15 +46,10 @@ export async function GET(req: Request) {
     .order("created_at", { ascending: false })
     .limit(200);
 
-  if (error)
-    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
-  if (!alerts || alerts.length === 0)
-    return NextResponse.json({
-      ok: true,
-      sent: 0,
-      forced: force,
-      attempts: 0,
-    });
+  if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+  if (!alerts || alerts.length === 0) {
+    return NextResponse.json({ ok: true, sent: 0, forced: force, attempts: 0 });
+  }
 
   const byQuery = new Map<string, any[]>();
   for (const a of alerts) {
@@ -72,87 +60,66 @@ export async function GET(req: Request) {
 
   let sentCount = 0;
   let attempts = 0;
-  const details: Array<{
-    id: string;
-    email: string;
-    query: string;
-    pct: number | null;
-    status: "sent" | "skipped" | "error";
-    error?: any;
-  }> = [];
+  const details: Array<{ id: string; email: string; query: string; pct: number | null; status: "sent" | "skipped" | "error"; error?: any }> = [];
   const now = Date.now();
 
   for (const [query, subs] of byQuery.entries()) {
-    const res = await fetch(
-      `${url.origin}/api/trends?q=${encodeURIComponent(query)}`,
-      { cache: "no-store" }
-    );
+    const res = await fetch(`${url.origin}/api/trends?q=${encodeURIComponent(query)}`, { cache: "no-store" });
     const json = await res.json();
     const points: TrendPoint[] = json?.trends ?? [];
     const pct = pctWoW(points);
     const lastInterest = points.at(-1)?.interest ?? null;
 
-    // récupérer l’URL du graphe
+    // URL de graphe pour l'email (si points non vides)
     let chartUrl: string | null = null;
-    try {
-      const chartRes = await fetch(
-        `${url.origin}/api/chart?q=${encodeURIComponent(
-          query
-        )}&points=${encodeURIComponent(JSON.stringify(points))}`
-      );
-      const chartJson = await chartRes.json();
-      chartUrl = chartJson.url ?? null;
-    } catch (e) {
-      console.error("Erreur génération chart:", e);
+    if (points.length > 0) {
+      try {
+        const chartRes = await fetch(
+          `${url.origin}/api/chart?q=${encodeURIComponent(query)}&points=${encodeURIComponent(JSON.stringify(points))}`,
+          { cache: "no-store" }
+        );
+        const chartJson = await chartRes.json();
+        if (chartRes.ok && chartJson?.url) chartUrl = chartJson.url;
+      } catch (e) {
+        console.error("Erreur génération chart:", e);
+      }
     }
 
     if (pct == null && !force) {
-      for (const sub of subs)
-        details.push({
-          id: sub.id,
-          email: sub.email,
-          query,
-          pct,
-          status: "skipped",
-        });
+      for (const sub of subs) details.push({ id: sub.id, email: sub.email, query, pct, status: "skipped" });
       continue;
     }
 
     for (const sub of subs) {
       const threshold = Number(sub.threshold ?? 10);
-      const lastNotifiedAt = sub.last_notified_at
-        ? new Date(sub.last_notified_at).getTime()
-        : 0;
+      const lastNotifiedAt = sub.last_notified_at ? new Date(sub.last_notified_at).getTime() : 0;
       const hoursSince = (now - lastNotifiedAt) / 36e5;
 
-      const shouldSend =
-        force || (pct != null && pct >= threshold && hoursSince >= 24);
+      const shouldSend = force || (pct != null && pct >= threshold && hoursSince >= 24);
+
+      // Limitation Resend (mode test) : n’envoie que vers ton email
+      const isResendTestMode = String(from).includes("@resend.dev");
+      const allowedRecipient = process.env.RESEND_TEST_RECIPIENT || "guillaume.coulbaux@gmail.com";
+      const to = sub.email;
+
+      if (isResendTestMode && to !== allowedRecipient) {
+        details.push({ id: sub.id, email: to, query, pct: pct ?? null, status: "skipped", error: "resend_test_mode_restriction" });
+        continue;
+      }
+
       if (!shouldSend) {
-        details.push({
-          id: sub.id,
-          email: sub.email,
-          query,
-          pct: pct ?? null,
-          status: "skipped",
-        });
+        details.push({ id: sub.id, email: to, query, pct: pct ?? null, status: "skipped" });
         continue;
       }
 
       attempts++;
-      const to = sub.email;
 
       const subject = `ALERTE Trendily — “${query}” +${pct ?? 0}% cette semaine`;
       const html = `
         <div style="font-family:system-ui; line-height:1.55">
           <h2>🚀 Tendance en hausse : ${query}</h2>
-          <p><strong>+${pct ?? 0}%</strong> vs semaine précédente. Indice d’intérêt actuel : <strong>${
-        lastInterest ?? "?"
-      }</strong>.</p>
-          ${
-            chartUrl
-              ? `<img src="${chartUrl}" alt="Graphique de tendance" style="max-width:100%;margin-top:12px;border-radius:8px"/>`
-              : ""
-          }
+          <p><strong>+${pct ?? 0}%</strong> vs semaine précédente. Indice d’intérêt actuel : <strong>${lastInterest ?? "?"}</strong>.</p>
+          ${chartUrl ? `<p><img src="${chartUrl}" alt="Graphique d’évolution ${query}" style="max-width:100%;border-radius:10px"/></p>` : ""}
           <p>Idées d’actions rapides :</p>
           <ul>
             <li>Vidéo/short “pourquoi maintenant”.</li>
@@ -160,50 +127,23 @@ export async function GET(req: Request) {
             <li>Mini outil / template en lead magnet.</li>
           </ul>
           <p style="margin-top:16px;color:#666">— Trendily</p>
-        </div>`;
+        </div>`.trim();
 
       try {
-        const { error: sendErr } = await resend.emails.send({
-          from,
-          to,
-          subject,
-          html,
-        });
+        const { error: sendErr } = await resend.emails.send({ from, to, subject, html });
         if (sendErr) {
-          details.push({
-            id: sub.id,
-            email: to,
-            query,
-            pct: pct ?? null,
-            status: "error",
-            error: sendErr,
-          });
+          details.push({ id: sub.id, email: to, query, pct: pct ?? null, status: "error", error: sendErr });
           continue;
         }
         sentCount++;
-        details.push({
-          id: sub.id,
-          email: to,
-          query,
-          pct: pct ?? null,
-          status: "sent",
-        });
+        details.push({ id: sub.id, email: to, query, pct: pct ?? null, status: "sent" });
 
-        await supabase
-          .from("alerts")
-          .update({ last_notified_at: new Date().toISOString() })
-          .eq("id", sub.id);
+        await supabase.from("alerts").update({ last_notified_at: new Date().toISOString() }).eq("id", sub.id);
 
-        await delay(300); // éviter la limite Resend
+        // ⚠️ Resend limite à 2 req/s → on attend 600ms
+        await delay(600);
       } catch (e: any) {
-        details.push({
-          id: sub.id,
-          email: to,
-          query,
-          pct: pct ?? null,
-          status: "error",
-          error: e?.message ?? String(e),
-        });
+        details.push({ id: sub.id, email: to, query, pct: pct ?? null, status: "error", error: e?.message ?? String(e) });
       }
     }
   }

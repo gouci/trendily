@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+type TrendPoint = { title: string; interest: number };
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const q = searchParams.get("q") || "trend";
@@ -9,9 +11,13 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "missing points" }, { status: 400 });
   }
 
-  const data: { title: string; interest: number }[] = JSON.parse(points);
+  let data: TrendPoint[] = [];
+  try {
+    data = JSON.parse(points);
+  } catch {
+    return NextResponse.json({ ok: false, error: "invalid points json" }, { status: 400 });
+  }
 
-  // On fabrique une URL QuickChart (chart.js derrière)
   const chartConfig = {
     type: "line",
     data: {
@@ -21,17 +27,16 @@ export async function GET(req: Request) {
           label: q,
           data: data.map((p) => p.interest),
           borderColor: "rgb(37, 99, 235)",
-          backgroundColor: "rgba(37, 99, 235, 0.2)",
+          backgroundColor: "rgba(37, 99, 235, 0.18)",
           fill: true,
-          tension: 0.3,
+          tension: 0.35,
+          pointRadius: 0,
         },
       ],
     },
     options: {
       plugins: { legend: { display: false } },
-      scales: {
-        y: { beginAtZero: true },
-      },
+      scales: { y: { beginAtZero: true } },
     },
   };
 
