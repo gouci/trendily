@@ -16,6 +16,14 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Convertit "2025-08-10" => "2025-08-10" (YYYY-MM-DD) en s’assurant du format date */
+function toISODate(d: string): string {
+  // d vient déjà de l’API au format "YYYY-MM-DD", on le normalise quand même
+  const date = new Date(d);
+  if (Number.isNaN(date.getTime())) return d; // au cas où, on renvoie tel quel
+  return date.toISOString().slice(0, 10);
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
 
@@ -27,30 +35,45 @@ export async function GET(req: Request) {
 
   const force = url.searchParams.get("force") === "true";
 
-  // --- clients ---
-  const supabase = createClient(
+  // --- Supabase clients ---
+  // Client “admin” (service role) pour écrire dans la table trends même si RLS activée.
+  const supabaseAdmin = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    // Si la SERVICE_ROLE_KEY n’est pas dispo, on retombe sur l’anon key pour ne pas crasher
+    process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { auth: { persistSession: false, detectSessionInUrl: false } }
+  );
+
+  // Client “anon” pour lecture “standard” (alerts)
+  const supabaseAnon = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     { auth: { persistSession: false, detectSessionInUrl: false } }
   );
 
+  // --- Resend ---
   const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) return NextResponse.json({ ok: false, error: "Missing RESEND_API_KEY" }, { status: 500 });
+  if (!apiKey) {
+    return NextResponse.json({ ok: false, error: "Missing RESEND_API_KEY" }, { status: 500 });
+  }
   const resend = new Resend(apiKey);
   const from = process.env.EMAIL_FROM || "Trendily <onboarding@resend.dev>";
 
   // --- lire abonnements ---
-  const { data: alerts, error } = await supabase
+  const { data: alerts, error } = await supabaseAnon
     .from("alerts")
     .select("*")
     .order("created_at", { ascending: false })
     .limit(200);
 
-  if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+  if (error) {
+    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+  }
   if (!alerts || alerts.length === 0) {
     return NextResponse.json({ ok: true, sent: 0, forced: force, attempts: 0 });
   }
 
+  // Regrouper par query (ta table alerts ne stocke pas encore le geo, on met GLOBAL par défaut)
   const byQuery = new Map<string, any[]>();
   for (const a of alerts) {
     const list = byQuery.get(a.query) ?? [];
@@ -60,17 +83,48 @@ export async function GET(req: Request) {
 
   let sentCount = 0;
   let attempts = 0;
-  const details: Array<{ id: string; email: string; query: string; pct: number | null; status: "sent" | "skipped" | "error"; error?: any }> = [];
+  const details: Array<{
+    id: string;
+    email: string;
+    query: string;
+    pct: number | null;
+    status: "sent" | "skipped" | "error";
+    error?: any;
+  }> = [];
   const now = Date.now();
 
   for (const [query, subs] of byQuery.entries()) {
+    // Récup data live (GLOBAL pour l’instant)
     const res = await fetch(`${url.origin}/api/trends?q=${encodeURIComponent(query)}`, { cache: "no-store" });
     const json = await res.json();
     const points: TrendPoint[] = json?.trends ?? [];
     const pct = pctWoW(points);
     const lastInterest = points.at(-1)?.interest ?? null;
 
-    // URL de graphe pour l'email (si points non vides)
+    // --- Historisation : upsert dans public.trends ---
+    // geo = "GLOBAL" par défaut (on ajoutera un champ geo aux alerts plus tard si besoin)
+    const geo = "GLOBAL";
+    if (points.length > 0) {
+      try {
+        const rows = points.map((p) => ({
+          query,
+          geo,
+          week_start: toISODate(p.title), // "YYYY-MM-DD"
+          interest: p.interest,
+        }));
+        // upsert par (query, geo, week_start)
+        const { error: upsertErr } = await supabaseAdmin
+          .from("trends")
+          .upsert(rows, { onConflict: "query,geo,week_start" });
+        if (upsertErr) {
+          console.error("Upsert trends error:", upsertErr);
+        }
+      } catch (e) {
+        console.error("Historisation trends échouée:", e);
+      }
+    }
+
+    // --- Générer l’URL du graphe (pour l’email) ---
     let chartUrl: string | null = null;
     if (points.length > 0) {
       try {
@@ -97,11 +151,10 @@ export async function GET(req: Request) {
 
       const shouldSend = force || (pct != null && pct >= threshold && hoursSince >= 24);
 
-      // Limitation Resend (mode test) : n’envoie que vers ton email
+      // Mode test Resend : n’envoie que vers ton adresse
       const isResendTestMode = String(from).includes("@resend.dev");
       const allowedRecipient = process.env.RESEND_TEST_RECIPIENT || "guillaume.coulbaux@gmail.com";
       const to = sub.email;
-
       if (isResendTestMode && to !== allowedRecipient) {
         details.push({ id: sub.id, email: to, query, pct: pct ?? null, status: "skipped", error: "resend_test_mode_restriction" });
         continue;
@@ -127,7 +180,8 @@ export async function GET(req: Request) {
             <li>Mini outil / template en lead magnet.</li>
           </ul>
           <p style="margin-top:16px;color:#666">— Trendily</p>
-        </div>`.trim();
+        </div>
+      `.trim();
 
       try {
         const { error: sendErr } = await resend.emails.send({ from, to, subject, html });
@@ -138,9 +192,9 @@ export async function GET(req: Request) {
         sentCount++;
         details.push({ id: sub.id, email: to, query, pct: pct ?? null, status: "sent" });
 
-        await supabase.from("alerts").update({ last_notified_at: new Date().toISOString() }).eq("id", sub.id);
+        await supabaseAnon.from("alerts").update({ last_notified_at: new Date().toISOString() }).eq("id", sub.id);
 
-        // ⚠️ Resend limite à 2 req/s → on attend 600ms
+        // Resend limite à ~2 req/s
         await delay(600);
       } catch (e: any) {
         details.push({ id: sub.id, email: to, query, pct: pct ?? null, status: "error", error: e?.message ?? String(e) });
