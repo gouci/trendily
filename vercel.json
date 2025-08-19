@@ -2,8 +2,7 @@
     "crons": [
       {
         "path": "/api/check-alerts?key=dev-secret-ultra-simple",
-        "schedule": "0 9 * * *",
-        "timeZone": "America/New_York"
+        "schedule": "0 13 * * *"
       }
     ]
   }
