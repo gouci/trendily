@@ -104,6 +104,17 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+   // --- TEST LECTURE trends (à retirer après vérif) ---
+   useEffect(() => {
+    (async () => {
+      const { data: testData, error: testError } = await supabase
+        .from("trends")
+        .select("*")
+        .limit(5);
+      console.log("Test trends:", { testData, testError });
+    })();
+  }, [supabase]);
+
   const handleSubscribe = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
